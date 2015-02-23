@@ -1,5 +1,6 @@
 (ns mlens.core
   (:require [flambo.api :as f]
+            [flambo.tuple :as ft]
             [flambo.conf :as conf])
   (:import [org.apache.log4j Level Logger]
            [scala Tuple2]
@@ -21,49 +22,98 @@
 
 (def data (f/text-file sc "resources/u.data"))
 
-(defn parse-rating 
+(f/defsparkfn split-line 
+  [line]
+  (clojure.string/split line #"\t"))
+
+(f/defsparkfn parse-rating 
   [[user-id product-id rating timestamp]]
   (Rating.
     (Integer/parseInt user-id)
     (Integer/parseInt product-id)
     (Double/parseDouble rating)))
 
+(f/defsparkfn user-product-tuple
+   [rating]
+   (ft/tuple 
+     (.user rating) 
+     (.product rating)))
+
+(f/defsparkfn wrap-rating
+    [r] 
+    (ft/tuple 
+      (ft/tuple (.user r) (.product r))
+      (.rating r)))
+
+(f/defsparkfn unscala
+  [r]
+  (let  [user-product  (._1 r)
+         user  (._1 user-product)
+         product  (._2 user-product)
+         actual-predicted  (._2 r)
+         actual  (._1 actual-predicted)
+         predicted  (._2 actual-predicted)]
+    [[user product] [actual predicted]]))
+;(f/defsparkfn [])
+(f/defsparkfn squared-error
+    [r]
+    (let [r-vals  (last r)]
+      (* (- (first r-vals) (second r-vals))
+         (- (first r-vals) (second r-vals)))))
+
 (def ratings (-> data
-                 (f/map (f/fn [line] (clojure.string/split line #"\t")))
-                 (f/map (f/fn [rating-tuple] (parse-rating rating-tuple)))))
+                 (f/map split-line)
+                 (f/map parse-rating)))
 
 (def rank 10)
 (def numIterations 20)
 (def model 
   (ALS/train (.rdd ratings) rank numIterations 0.01))
 
-
 (def user-products (-> ratings
-                       (f/map (f/fn [rating] [(.user rating) 
-                                              (.product rating)]))
-                       (f/map (f/fn [r] (Tuple2. (first r) (last r))))))  ;convert to scala Tuple
+                       (f/map user-product-tuple)))
 
 (def predictions (-> (.toJavaRDD (.predict model (.rdd user-products)))
-                     (f/map-to-pair (f/fn [r] 
-                                      (Tuple2. 
-                                        (Tuple2. (.user r) (.product r))
-                                        (.rating r))))))
+                     (f/map-to-pair wrap-rating)))
 
 (def rates (-> ratings
-               (f/map-to-pair (f/fn [r] 
-                                (Tuple2. 
-                                  (Tuple2. (.user r) (.product r))
-                                  (.rating r))))))
+               (f/map-to-pair wrap-rating)))
 
-(def rates-and-predictions (f/join rates predictions)) 
+(def rates-and-predictions (-> (f/join rates predictions)
+                               (f/map unscala)))
 
 (def MSE (-> rates-and-predictions
-             (f/map (f/fn [r] (let [r-vals (._2 r)]
-                                (- (._1 r-vals) (._2 r-vals)))))
+             (f/map squared-error)
              (f/reduce (f/fn [x y] (+ x y)))))
 
-(def count-rec  (f/count rates-and-predictions))
-(def MSE  (/ MSE count-rec))
+
+(def user-one (-> rates
+                  (f/filter (f/fn [tuple] (= (._1 (._1 tuple)) 1)))
+                  (f/map (f/fn [tuple] 
+                           [(._2 (._1 tuple)) (._2 tuple)]))
+                  (f/filter (f/fn [t] (= (last t) 5.0)))
+                  f/collect
+                  ))
+
+(def products (-> rates
+                  (f/map (f/fn [t] (._2 (._1 t))))
+                  f/distinct))
+
+(def one-products (-> products
+                      (f/map-to-pair (f/fn [prod-id] (ft/tuple 1 prod-id)))))
+
+(def one-recs (-> (.toJavaRDD (.predict model (.rdd user-products)))
+                  f/sort-by-key
+                  f/collect))
+
+; Joining two datasets
+; (def a-rdd (f/parallelize sc [[1 2] [3 4]]))
+; (def b-rdd (f/parallelize sc [[5 6] [7 8]]))
+; (f/collect (.union a-rdd b-rdd))
+
+;(clojure.pprint/pprint (.recommendProducts model 2 10))
+(def count-ratings (f/count ratings))
+(def MSE (/ MSE count-ratings))
 
 (def RMSE (Math/sqrt MSE))
 
