@@ -86,37 +86,61 @@
              (f/map squared-error)
              (f/reduce (f/fn [x y] (+ x y)))))
 
-
-(def user-one (-> rates
-                  (f/filter (f/fn [tuple] (= (._1 (._1 tuple)) 1)))
-                  (f/map (f/fn [tuple] 
-                           [(._2 (._1 tuple)) (._2 tuple)]))
-                  (f/filter (f/fn [t] (= (last t) 5.0)))
-                  f/collect
-                  ))
-
-(def products (-> rates
-                  (f/map (f/fn [t] (._2 (._1 t))))
-                  f/distinct))
-
-(def one-products (-> products
-                      (f/map-to-pair (f/fn [prod-id] (ft/tuple 1 prod-id)))))
-
-(def one-recs (-> (.toJavaRDD (.predict model (.rdd user-products)))
-                  f/sort-by-key
-                  f/collect))
-
-; Joining two datasets
-; (def a-rdd (f/parallelize sc [[1 2] [3 4]]))
-; (def b-rdd (f/parallelize sc [[5 6] [7 8]]))
-; (f/collect (.union a-rdd b-rdd))
-
-;(clojure.pprint/pprint (.recommendProducts model 2 10))
 (def count-ratings (f/count ratings))
 (def MSE (/ MSE count-ratings))
 
 (def RMSE (Math/sqrt MSE))
 
+(defn single-point-entropy
+  [freq len]
+  (let [rf (/ freq len)]
+    (Math/abs 
+      (* rf (/ (Math/log rf) 
+               (Math/log 2))))))
+
+(defn string-entropy
+  [s]
+  (let  [len  (count s)
+         log-2  (Math/log 2)]
+    (->> (frequencies s)
+         (map  (fn  [[_ v]]
+                 (let  [rf  (/ v len)]
+                   (->  (Math/log rf)  (/ log-2)  (* rf) Math/abs))))
+         (reduce +))))
+
+(def rating-counts (-> data
+                       (f/map split-line)
+                       (f/map-to-pair (f/fn [t] (ft/tuple (second t) 1)))
+                       (f/reduce-by-key (f/fn [x y] (+ x y)))
+                       ))
+; points to most popular
+(def entropy (-> rating-counts
+                 (f/map (f/fn [t] [(._1 t) 
+                                   (single-point-entropy (._2 t) count-ratings)]))))
+; also points to most popular
+(def info-gain (-> rating-counts
+                  (f/map (f/fn [t] [(._1 t) 
+                                   (- (single-point-entropy (._2 t) count-ratings)
+                                      (single-point-entropy (+ 1 (._2 t)) count-ratings))]))))
+; different approach:entropy of string of the ratings, normalised by length
+(def rating-strings (-> data
+                       (f/map split-line)
+                       (f/map-to-pair (f/fn [t] (ft/tuple (second t) (last t))))
+                       (f/reduce-by-key (f/fn [x y] (str x y)))
+                       ))
+
+(def entropy-str (-> rating-strings
+                     (f/map (f/fn [t] [(._1 t)
+                                       (string-entropy (._2 t))]))
+                     f/collect))
+; normalising by length
+(def entropy-str-normalised (-> rating-strings
+                                (f/map (f/fn [t] [(._1 t)
+                                                  (/ (string-entropy (._2 t))
+                                                      (count (._2 t)))]))
+                                f/collect))
+
+; just variance rather than entropy
 (defn evaluate-predictions 
   [ratings predictions]
   (let [rates-and-predictions (f/join rates predictions)
