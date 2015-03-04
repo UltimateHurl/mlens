@@ -58,28 +58,6 @@
   (-> d 
       (f/map parse-rating)))
 
-(defn experiment
-  []
-  (let [training (.cache (.sample data false 0.7))
-        testing (.subtract data training)
-        rank 10
-        numIterations 20
-        model (ALS/train (.rdd (to-ratings training)) rank numIterations 0.01)
-        predictions (-> (.toJavaRDD 
-                          (.predict model 
-                                    (.rdd (to-user-products 
-                                            (to-ratings testing)))))
-                        (f/map-to-pair wrap-rating)) 
-        SSE (-> (f/join rates predictions)
-                (f/map unscala)
-                (f/map squared-error)
-                (f/reduce (f/fn [x y] (+ x y))))
-        MSE (/ SSE (f/count testing))
-        RMSE (Math/sqrt MSE)
-        ]
-    ))
-
-
 (def initial-data
   {:iteration 0
    :training (.cache (.sample data false 0.7))
