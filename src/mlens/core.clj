@@ -39,7 +39,7 @@
 
 (f/defsparkfn unscala
   [r]
-  (map f/untuple (f/tuple r)))
+  (map f/untuple (f/untuple r)))
 
 (f/defsparkfn squared-error
     [r]
@@ -64,10 +64,7 @@
         testing (.subtract data training)
         rank 10
         numIterations 20
-        model (ALS/train (.rdd (to-ratings training))
-                         rank
-                         numIterations
-                         0.01)
+        model (ALS/train (.rdd (to-ratings training)) rank numIterations 0.01)
         predictions (-> (.toJavaRDD 
                           (.predict model 
                                     (.rdd (to-user-products 
@@ -80,10 +77,98 @@
         MSE (/ SSE (f/count testing))
         RMSE (Math/sqrt MSE)
         ]
-    (println "---------------------")
-    (println "Data     : " (f/count data))
-    (println "Training : " (f/count training))
-    (println "Testing  : " (f/count testing))
-    (println "---------------------")
-    (println "RMSE     : " RMSE)))
+    ))
 
+
+(def initial-data
+  {:iteration 0
+   :training (.cache (.sample data false 0.7))
+   :testing (.subtract data training)})
+
+(defn default-pre-processing
+  [data]
+  {:iteration (inc (:iteration data)) 
+   :training (.cache (.sample data false 0.7))
+   :testing (.subtract data training)})
+
+(defn fit-model
+  [training]
+  (let [rank 10
+        numIterations 20
+        model (ALS/train (.rdd (to-ratings training)) rank numIterations 0.01)]
+    model))
+
+(defn get-predictions
+  [model testing]
+  (let [predictions (-> (.toJavaRDD 
+                          (.predict model 
+                                    (.rdd (to-user-products 
+                                            (to-ratings testing)))))
+                        (f/map-to-pair wrap-rating))]
+    predictions))
+
+(defn evaluate
+  [model predictions testin]
+  (let [SSE (-> (f/join rates predictions)
+                (f/map unscala)
+                (f/map squared-error)
+                (f/reduce (f/fn [x y] (+ x y))))
+        MSE (/ SSE (f/count testing))
+        RMSE (Math/sqrt MSE)]
+    {:SSE SSE
+     :MSE MSE
+     :RMSE RMSE}))
+
+(defn default-experiment
+  [data]
+  (let  [model (fit-model (:training data))
+         predictions (get-predictions model (:testing data))
+         metrics (evaluate model predictions (:testing data))]
+    {:iteration (:iteration data)
+     :training (:training data) 
+     :testing (:testing data)
+     :model model
+     :predictions predictions
+     :metrics metrics}))
+
+(defn default-post-processing
+  [data]
+  data)
+
+(def pre-processing default-pre-processing)
+(def experiment default-experiment)
+(def post-processing default-post-processing)
+
+(def lazy-run-experiment
+  ((fn exp [data]
+     (let [input (pre-processing data)
+           result (default-experiment input)
+           next-data (post-processing result)]
+     (lazy-seq (cons 
+                 result
+                 (exp next-data)))))
+   initial-data))
+
+(defn -main
+  []
+  (let [run-count 5
+        runs (take run-count lazy-run-experiment)
+        avg-train-count (float (/ (reduce + (map #(f/count (:training %)) runs))
+                                  run-count)) 
+        avg-test-count (float (/ (reduce + (map #(f/count (:testing %)) runs))
+                                  run-count)) 
+        avg-rmse (float (/ (reduce + (map #(:RMSE (:metrics %)) runs))
+                           run-count))
+        ]
+    (println "---------------------")
+    (println "Ratings  :" (f/count data))
+    (println "Runs     :" run-count)
+    (println "Training :" avg-train-count)
+    (println "Testing  :" avg-test-count)
+    (println "---------------------")
+    (println "Avg RMSE : " avg-rmse)))
+
+;data-split  (split-dataset d 0.7)
+;training  (first data-split)
+;testing  (second data-split)
+         
