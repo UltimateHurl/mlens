@@ -5,7 +5,7 @@
   (:import [org.apache.log4j Level Logger]
            [scala Tuple2]
            [org.apache.spark.api.java.function Function]
-           [org.apache.spark.mllib.recommendation ALS MatrixFactorizationModel Rating])) 
+           [org.apache.spark.mllib.recommendation ALS MatrixFactorizationModel Rating]))
 
 ;; We don't need to see everything;
 (.setLevel (Logger/getRootLogger) Level/WARN)
@@ -17,11 +17,11 @@
 (def sc (f/spark-context c))
 
 ; Spark fns
-(f/defsparkfn split-line 
+(f/defsparkfn split-line
   [line]
   (clojure.string/split line #"\t"))
 
-(f/defsparkfn parse-rating 
+(f/defsparkfn parse-rating
   [[user-id product-id rating timestamp]]
   (Rating. (Integer/parseInt user-id)
            (Integer/parseInt product-id)
@@ -29,11 +29,11 @@
 
 (f/defsparkfn user-product-tuple
    [rating]
-   (ft/tuple (.user rating) 
+   (ft/tuple (.user rating)
              (.product rating)))
 
 (f/defsparkfn wrap-rating
-    [r] 
+    [r]
     (ft/tuple (ft/tuple (.user r) (.product r))
               (.rating r)))
 
@@ -55,7 +55,7 @@
 
 (defn to-ratings
   [d]
-  (-> d 
+  (-> d
       (f/map parse-rating)))
 
 (def initial-data
@@ -65,7 +65,7 @@
 
 (defn default-pre-processing
   [data]
-  {:iteration (inc (:iteration data)) 
+  {:iteration (inc (:iteration data))
    :training (.cache (.sample data false 0.7))
    :testing (.subtract data training)})
 
@@ -78,9 +78,9 @@
 
 (defn get-predictions
   [model testing]
-  (let [predictions (-> (.toJavaRDD 
-                          (.predict model 
-                                    (.rdd (to-user-products 
+  (let [predictions (-> (.toJavaRDD
+                          (.predict model
+                                    (.rdd (to-user-products
                                             (to-ratings testing)))))
                         (f/map-to-pair wrap-rating))]
     predictions))
@@ -103,7 +103,7 @@
          predictions (get-predictions model (:testing data))
          metrics (evaluate model predictions (:testing data))]
     {:iteration (:iteration data)
-     :training (:training data) 
+     :training (:training data)
      :testing (:testing data)
      :model model
      :predictions predictions
@@ -122,7 +122,7 @@
      (let [input (pre-processing data)
            result (default-experiment input)
            next-data (post-processing result)]
-     (lazy-seq (cons 
+     (lazy-seq (cons
                  result
                  (exp next-data)))))
    initial-data))
@@ -132,9 +132,9 @@
   (let [run-count 5
         runs (take run-count lazy-run-experiment)
         avg-train-count (float (/ (reduce + (map #(f/count (:training %)) runs))
-                                  run-count)) 
+                                  run-count))
         avg-test-count (float (/ (reduce + (map #(f/count (:testing %)) runs))
-                                  run-count)) 
+                                  run-count))
         avg-rmse (float (/ (reduce + (map #(:RMSE (:metrics %)) runs))
                            run-count))
         ]
@@ -149,4 +149,4 @@
 ;data-split  (split-dataset d 0.7)
 ;training  (first data-split)
 ;testing  (second data-split)
-         
+
